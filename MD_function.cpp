@@ -232,7 +232,7 @@ double MD_getFtol(const int &N, double * Dn, double * x, double * Fx, const doub
                 }
             }
         }
-    }
+    }    
     for (int i=0; i<2*N; i++) Ftol += (Fx[i] * Fx[i]);
     Ftol /= (N*N);
     return Ftol;
@@ -338,6 +338,7 @@ double MD_cmpjam_minimization(int N, double * Dn, double * m, double * x, double
     while (Ftol>tol && nt<Nt)
     {
         // periodic BC, warning!!! does not account for gam != 0.
+        
         if (gam == 0)
         {
             for (int i = 0; i < 2*N; i++)
@@ -349,7 +350,7 @@ double MD_cmpjam_minimization(int N, double * Dn, double * m, double * x, double
                 }
             }
         }
-        
+
         // zeroing center of mass velocity
         if (nt%100 == 0) MD_CMzeroing(N,vx,m);
         
@@ -358,6 +359,33 @@ double MD_cmpjam_minimization(int N, double * Dn, double * m, double * x, double
 
         // get forces from position
         Ftol = MD_getFtol(N,Dn,x,Fx,alpha,gam);
+        if (Ftol < tol)
+        {
+            if (nt < 1000) 
+            {
+                Ftol = tol; // wait until we have a break time
+            }
+            else
+            {
+                if (nt >= 1000 && nt < 0.9 * Nt)
+                {
+                    int Nr = 0;
+                    bool * is_rattler = new bool[N];
+                    for (int i=0; i<N; i++) is_rattler[i] = false;
+                    MD_getRattler(N, Dn, x, is_rattler, gam);
+                    Ftol = 0;
+                    for (int i=0; i<N; i++) 
+                    {
+                        if (~is_rattler[i]) 
+                        {
+                            Nr += 1;
+                            Ftol += (Fx[2*i] * Fx[2*i] + Fx[2*i+1] * Fx[2*i+1]);
+                        }
+                    }
+                    Ftol /= (Nr*Nr);
+                }
+            }
+        }
 
         // calculates acceleration
         for (int i=0; i<N; i++) 
@@ -495,11 +523,18 @@ void MD_cmpjam_main(int N, double * Dn, double * m, double * x, double dt, doubl
     const double dt0 = dt;
 
     double P = MD_getP(N,Dn,x,alpha,gam);
+    double P0 = P;
     // printf("Current P=%1.5f.\n",P);
 
     double * Dn_old = new double[N];
     double * m_old = new double[N];
     double * x_old = new double[2*N];
+    for (int i=0; i<2*N; i++) x_old[i] = x[i];
+    for (int i=0; i<N; i++)
+    {
+        Dn_old[i] = Dn[i];
+        m_old[i] = m[i];
+    }
 
     // save initial state
     double * Dn_ini = new double[N];
@@ -513,11 +548,10 @@ void MD_cmpjam_main(int N, double * Dn, double * m, double * x, double dt, doubl
     }
 
     long count = 0;
-    long count_max = 1e5;
-    int count_restart = 0;
-    int count_rejam = 0;
+    long count_max = 5e5;
 
     bool regular_case = true;
+    // bool regular_case = false;
 
     time_t tstart, tend;
     tstart = time(0);
@@ -551,7 +585,11 @@ void MD_cmpjam_main(int N, double * Dn, double * m, double * x, double dt, doubl
             }
             else // difficult case
             {
-                dphi = -fabs(dphi)/2.0;
+                mt19937 generator(time(0));
+                uniform_real_distribution<double> distribution(0.0, 1.0);
+                double randscale;
+                do {randscale = distribution(generator);} while (randscale < 0.1);
+                dphi = -fabs(dphi) * randscale;
             }            
             
             P = MD_cmpjam_minimization(N,Dn,m,x,dt,alpha,dphi,gam,ftol);
@@ -559,19 +597,24 @@ void MD_cmpjam_main(int N, double * Dn, double * m, double * x, double dt, doubl
         // print out here
         double totalarea = 0.0;
         for(int i = 0; i < N; i++) totalarea += m[i];
+
+        /*
         if (totalarea > 0.8 && count > 50 && count < 150) printf("%ld,phi=%1.7f,dphi=%e,P=%e.\n",count,totalarea,dphi,P);
         else if (totalarea > 0.8 && count > 150 && count < 1e3 && count%100 == 0) printf("%ld,phi=%1.7f,dphi=%e,P=%e.\n",count,totalarea,dphi,P);
         else if (totalarea > 0.8 && count > 1e3 && count < 1e4 && count%1000 == 0) printf("%ld,phi=%1.7f,dphi=%e,P=%e.\n",count,totalarea,dphi,P);
         else if (totalarea > 0.8 && count > 1e4 && count%10000 == 0) printf("%ld,phi=%1.7f,dphi=%e,P=%e.\n",count,totalarea,dphi,P);
+        */
+
         count ++;
-        // modify this part to reload previous configuration and jam again        
+      
         if (count > count_max || fabs(dphi) < 3.0e-16)
         {   
-            cout << "Difficult, restart." << endl;
-            if (fabs(dphi) < 3.0e-16) cout << "dphi too small,dPtol=" << (P-Ptol) << endl;
-            count_restart ++;
-            mt19937 generator(time(0));
-            uniform_real_distribution<double> distribution(0.0, 1.0);
+            count = 0;
+            regular_case = false;
+
+            if (fabs(dphi) < 3.0e-16) cout << "Difficult->decomp,dphi too small,dPtol=" << (P-Ptol) << endl;
+            
+            /*
             // copy initial to current
             for (int i=0; i<2*N; i++) x[i] = x_ini[i];
             for (int i=0; i<N; i++)
@@ -579,53 +622,19 @@ void MD_cmpjam_main(int N, double * Dn, double * m, double * x, double dt, doubl
                 Dn[i] = Dn_ini[i];
                 m[i] = m_ini[i];
             }
+            */
+
+            mt19937 generator(time(0));
+            uniform_real_distribution<double> distribution(0.0, 1.0);
             double randscale;
             do {randscale = distribution(generator);} while (randscale < 0.1);
-            dphi = dphi0 * randscale;
-            count = 0;
+            dphi = -dphi0 * randscale;
+            P = MD_cmpjam_minimization(N,Dn,m,x,dt,alpha,dphi,gam,ftol);
+
             double totalarea = 0.0;
             for(int i = 0; i < N; i++) totalarea += m[i];
             printf("%ld,phi=%1.7f,dphi=%e,P=%e.\n",count,totalarea,dphi,P);
-            if (count_restart > 1 && count_restart%5 == 0)
-            {
-                double randnum;
-                do {randnum = distribution(generator);} while (randnum < 0.05);                
-                dt = dt0 * randnum;
-            }
         }
-        if (regular_case && count_restart > 10) 
-        {
-            cout << "We have a hard case here, relax Ftol..." << endl;
-            regular_case = false;
-            mt19937 generator(time(0));
-            uniform_real_distribution<double> distribution(0.0, 1.0);
-            double randscale;
-            do {randscale = distribution(generator);} while (randscale < 0.1);
-            ftol = ftol0 * randscale;
-        }
-        if (count_restart > 20)
-        {
-            cout << "Too difficult, find new jammed state instead." << endl;
-            regular_case = true;
-            mt19937 generator(time(0));
-            uniform_real_distribution<double> distribution(0.0, 1.0);
-            double randscale;
-            do {randscale = distribution(generator);} while (randscale < 0.1);
-            dphi = -1e-4 * randscale;
-            P = MD_cmpjam_minimization(N,Dn,m,x,dt,alpha,dphi,gam,ftol);
-            while (P > 0) P = MD_cmpjam_minimization(N,Dn,m,x,dt,alpha,dphi,gam,ftol);
-            do {randscale = distribution(generator);} while (randscale < 0.1);
-            dphi = 1e-4 * randscale;
-            dt = dt0;
-            // ftol = ftol0;
-            count_restart = 0;
-            count_rejam ++;
-        }
-        if (count_rejam > 1)
-        {
-            // cout << "Taking painkiller!!!" << endl;
-            tol = tol0 / 10.0; // painkiller
-        } 
     }
     double totalarea = 0.0;
     for(int i = 0; i < N; i++) totalarea += m[i];

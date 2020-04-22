@@ -14,7 +14,7 @@ int main(int argc, char ** argv)
 {
     /*
     to compile on cluster:
-    g++ jamming_2D_prep_comp.cpp MD_function.hpp MD_function.cpp -static -O3 -o jamming_cpp.out
+    g++ jamming_2D_prep_comp.cpp MD_function.hpp MD_function.cpp -static -O3 -o jamming.out
     local machine:
     clang++ jamming_2D_prep_comp.cpp MD_function.hpp MD_function.cpp -O3
     */
@@ -202,8 +202,10 @@ int main(int argc, char ** argv)
             if (fileExist(restartfile.c_str()))
             {
                 loadResult(restartfile.c_str(),N,Dn,m,x);
-                cout << "Loaded from alpha=2.0! Current P=" << MD_getP(N, Dn, x, alpha, 0.0) << "." << endl;
+                for(int i = 0; i < N; i++) totalarea += m[i];
+                cout << "Loaded from alpha=2.0! Current P=" << MD_getP(N, Dn, x, alpha, 0.0) << ",phi=" << totalarea << "!" << endl;
                 if (MD_getP(N, Dn, x, alpha, 0.0) < Ptol) dphi = 1e-10;
+                else dphi = -1e-4;
             }
             else
             {
