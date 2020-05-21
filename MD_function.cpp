@@ -201,6 +201,86 @@ double MD_getP(int N, double * Dn, double * x, double alpha, double gam)
     return P;
 }
 
+void MD_getCtcNwk(const int &N, double * Dn, double * x, bool * contact_network, const double &gam)
+{
+    int nn, mm;
+    double dx, dy, Dnm, dnm, F, im;
+    bool * is_rattler = new bool[N];
+    for (int i=0; i<N; i++) is_rattler[i] = false;
+    MD_getRattler(N, Dn, x, is_rattler, gam);
+    for (int i=0; i<N*N; i++) contact_network[i] = false;
+    for (nn=0; nn<N; nn++)
+    {
+        for (mm=nn+1; mm<N; mm++)
+        {
+            if (!is_rattler[nn] && !is_rattler[mm])
+            {
+                dy = x[2*mm+1]-x[2*nn+1];
+                im = round(dy);
+                dy -= im;
+                dx = x[2*mm]-x[2*nn];
+                dx -= round(dx);
+                dx -= (round(dx-im*gam)+im*gam);
+                Dnm = 0.5 * (Dn[nn]+Dn[mm]);
+                if (fabs(dy)<Dnm)
+                {
+                    dnm = sqrt(dx*dx+dy*dy);
+                    if (dnm < Dnm) contact_network[nn*N+mm] = true;
+                }
+            }
+        }
+    }
+}
+
+double MD_getP_DS(const int &N, double * Dn, double * x, const bool * contact_network, const double &alpha, const double &gam)
+{
+    // x runs x0,y0,x1,y1...xN,yN
+    int nn, mm;
+    double P, dx, dy, Dnm, dnm, F, im, D;
+    double stress[4] = {0}; // Sxx,Sxy,Syx,Syy
+    D = 1.0;
+    for (nn=0; nn<N; nn++)
+    {
+        D = min(D, Dn[nn]);
+        for (mm=nn+1; mm<N; mm++)
+        {
+            if (contact_network[nn*N+mm])
+            {
+                dy = x[2*mm+1]-x[2*nn+1];
+                im = round(dy);
+                dy -= im;
+                dx = x[2*mm]-x[2*nn];
+                dx -= round(dx);
+                dx -= (round(dx-im*gam)+im*gam);
+                Dnm = 0.5 * (Dn[nn]+Dn[mm]);
+                dnm = sqrt(dx*dx+dy*dy);
+                double delta = 1.0-dnm/Dnm;
+                if (delta < 0) // dnm > Dnm - raises ERROR in std::pow
+                {
+                    F = pow(-delta,alpha-1.0)/Dnm/dnm; // becomes attraction!
+                }
+                else F = -pow(delta,alpha-1.0)/Dnm/dnm;
+                
+                if (isnan(F))
+                {
+                    cout << "NAN F!" << endl;
+                    cout << pow((1-dnm/Dnm),alpha-1.0) << endl;
+                    cout << (1-dnm/Dnm) << endl;
+                    cout << alpha-1.0 << endl;
+                } 
+                stress[0] -= F*dx*dx;
+                stress[1] -= 0.5*F*(dx*dy+dy*dx);
+                stress[2] -= 0.5*F*(dy*dx+dx*dy);
+                stress[3] -= F*dy*dy;
+            }
+            
+        }
+    }
+    for (int i=0; i<4; i++) stress[i] *= (D*D/4);
+    P = (stress[0] + stress[3])/2;
+    return P;
+}
+
 double MD_getFtol(const int &N, double * Dn, double * x, double * Fx, const double &alpha, const double &gam)
 {
     for (int i=0; i<2*N; i++) Fx[i] = 0.0;
@@ -367,7 +447,7 @@ double MD_cmpjam_minimization(int N, double * Dn, double * m, double * x, double
             }
             else
             {
-                if (nt >= 1000 && nt < 0.9 * Nt)
+                if (nt >= 1000 && nt < 0.5 * Nt)
                 {
                     int Nr = 0;
                     bool * is_rattler = new bool[N];
@@ -420,6 +500,7 @@ double MD_cmpjam_minimization(int N, double * Dn, double * m, double * x, double
         for (int i=0; i<2*N; i++) vx[i] += (ax_old[i]+ax[i])*dt/2.0;
         for (int i=0; i<2*N; i++) ax_old[i] = ax[i];
         nt++;
+        // if (nt > 1e4 && nt%10000 == 0) cout << nt << ",Ftol=" << Ftol << endl;
     }
     if (nt == Nt) cout << "Nt too small?" << endl;
     P = MD_getP(N,Dn,x,alpha,gam);
@@ -434,7 +515,9 @@ double MD_shrjam_minimization(const int &N, double * Dn, double * m, double * x,
     double dt2 = dt * dt;
     
     nt = 0;
-    Nt = 5e6 * N/64;
+    Nt = 5e6;
+    if (N > 64) Nt = Nt * N/64;
+
     double * vx = new double[2*N];
     double * ax = new double[2*N];
     double * ax_old = new double[2*N];
@@ -510,6 +593,12 @@ double MD_shrjam_minimization(const int &N, double * Dn, double * m, double * x,
     }
     if (nt == Nt) cout << "Nt too small?" << endl;
     P = MD_getP(N,Dn,x,alpha,gam);
+
+    delete[] vx;
+    delete[] ax;
+    delete[] ax_old;
+    delete[] Fx;
+
     return P;
 }
 
@@ -599,6 +688,131 @@ void MD_cmpjam_main(int N, double * Dn, double * m, double * x, double dt, doubl
         for(int i = 0; i < N; i++) totalarea += m[i];
 
         /*
+        if (totalarea > 0.8 && count > 0 && count < 150) printf("%ld,phi=%1.7f,dphi=%e,P=%e.\n",count,totalarea,dphi,P);
+        else if (totalarea > 0.8 && count > 150 && count < 1e3 && count%100 == 0) printf("%ld,phi=%1.7f,dphi=%e,P=%e.\n",count,totalarea,dphi,P);
+        
+        else if (totalarea > 0.8 && count > 1e3 && count < 1e4 && count%1000 == 0) printf("%ld,phi=%1.7f,dphi=%e,P=%e.\n",count,totalarea,dphi,P);
+        else if (totalarea > 0.8 && count > 1e4 && count%10000 == 0) printf("%ld,phi=%1.7f,dphi=%e,P=%e.\n",count,totalarea,dphi,P);
+        */
+
+        count ++;
+      
+        if (count > count_max || fabs(dphi) < 3.0e-16)
+        {   
+            count = 0;
+            regular_case = false;
+
+            mt19937 generator(time(0));
+            uniform_real_distribution<double> distribution(0.0, 1.0);
+            double randscale;
+            do {randscale = distribution(generator);} while (randscale < 0.1);
+            dphi = -dphi0 * randscale;
+            P = MD_cmpjam_minimization(N,Dn,m,x,dt,alpha,dphi,gam,ftol);
+
+            double totalarea = 0.0;
+            for(int i = 0; i < N; i++) totalarea += m[i];
+            // printf("%ld,phi=%1.7f,dphi=%e,P=%e.\n",count,totalarea,dphi,P);
+        }
+    }
+    double totalarea = 0.0;
+    for(int i = 0; i < N; i++) totalarea += m[i];
+    tend = time(0);
+    printf("%ld,t=%1.1fs,phi=%1.7f,dphi=%e,P=%e.\n",count,difftime(tend,tstart),totalarea,dphi,P);
+}
+
+void MD_cmpjam_main_DS(int N, double * Dn, double * m, double * x, bool * contact_network, double dt, double alpha, double Ptol, double dphi, double gam)
+{
+    double tol = 1e-7;
+    double ftol = 1e-30;
+    const double tol0 = tol;
+    const double ftol0 = ftol;
+    const double dphi0 = dphi;
+    const double dt0 = dt;
+
+    double P = MD_getP_DS(N,Dn,x,contact_network,alpha,gam);
+    double P0 = P;
+    // printf("Initial P=%e.\n",P);
+
+    double * Dn_old = new double[N];
+    double * m_old = new double[N];
+    double * x_old = new double[2*N];
+    for (int i=0; i<2*N; i++) x_old[i] = x[i];
+    for (int i=0; i<N; i++)
+    {
+        Dn_old[i] = Dn[i];
+        m_old[i] = m[i];
+    }
+
+    // save initial state
+    double * Dn_ini = new double[N];
+    double * m_ini = new double[N];
+    double * x_ini = new double[2*N];
+    for (int i=0; i<2*N; i++) x_ini[i] = x[i];
+    for (int i=0; i<N; i++)
+    {
+        Dn_ini[i] = Dn[i];
+        m_ini[i] = m[i];
+    }
+
+    long count = 0;
+    long count_max = 5e5;
+
+    bool regular_case;
+
+    if (P > (1+tol)*Ptol) regular_case = false; // loaded a overcompressed state
+    else regular_case = true;
+
+    if (!regular_case) cout << "Overcompressed initial state!" << endl;
+
+    time_t tstart, tend;
+    tstart = time(0);
+
+    while (P < Ptol || P > (1+tol)*Ptol)
+    {
+        if (P < Ptol)
+        {
+            dphi = fabs(dphi);
+            // copy current to old
+            for (int i=0; i<2*N; i++) x_old[i] = x[i];
+            for (int i=0; i<N; i++)
+            {
+                Dn_old[i] = Dn[i];
+                m_old[i] = m[i];
+            }
+            P = MD_cmpjam_minimization(N,Dn,m,x,dt,alpha,dphi,gam,ftol);
+        }
+        else if (P > (1+tol)*Ptol)
+        {
+            if (regular_case) // regular case
+            {
+                // copy old to current
+                for (int i=0; i<2*N; i++) x[i] = x_old[i];
+                for (int i=0; i<N; i++)
+                {
+                    Dn[i] = Dn_old[i];
+                    m[i] = m_old[i];
+                }
+                dphi /= 2.0;
+            }
+            else // difficult case
+            {
+                mt19937 generator(time(0));
+                uniform_real_distribution<double> distribution(0.0, 1.0);
+                double randscale;
+                do {randscale = distribution(generator);} while (randscale < 0.1);
+                dphi = -fabs(dphi) * randscale;
+            }            
+            
+            P = MD_cmpjam_minimization(N,Dn,m,x,dt,alpha,dphi,gam,ftol);
+        }
+        // update P here based on contact network
+        P = MD_getP_DS(N,Dn,x,contact_network,alpha,gam);
+
+        // print out here
+        double totalarea = 0.0;
+        for(int i = 0; i < N; i++) totalarea += m[i];
+
+        /*
         if (totalarea > 0.8 && count > 50 && count < 150) printf("%ld,phi=%1.7f,dphi=%e,P=%e.\n",count,totalarea,dphi,P);
         else if (totalarea > 0.8 && count > 150 && count < 1e3 && count%100 == 0) printf("%ld,phi=%1.7f,dphi=%e,P=%e.\n",count,totalarea,dphi,P);
         else if (totalarea > 0.8 && count > 1e3 && count < 1e4 && count%1000 == 0) printf("%ld,phi=%1.7f,dphi=%e,P=%e.\n",count,totalarea,dphi,P);
@@ -612,18 +826,6 @@ void MD_cmpjam_main(int N, double * Dn, double * m, double * x, double dt, doubl
             count = 0;
             regular_case = false;
 
-            if (fabs(dphi) < 3.0e-16) cout << "Difficult->decomp,dphi too small,dPtol=" << (P-Ptol) << endl;
-            
-            /*
-            // copy initial to current
-            for (int i=0; i<2*N; i++) x[i] = x_ini[i];
-            for (int i=0; i<N; i++)
-            {
-                Dn[i] = Dn_ini[i];
-                m[i] = m_ini[i];
-            }
-            */
-
             mt19937 generator(time(0));
             uniform_real_distribution<double> distribution(0.0, 1.0);
             double randscale;
@@ -633,7 +835,7 @@ void MD_cmpjam_main(int N, double * Dn, double * m, double * x, double dt, doubl
 
             double totalarea = 0.0;
             for(int i = 0; i < N; i++) totalarea += m[i];
-            printf("%ld,phi=%1.7f,dphi=%e,P=%e.\n",count,totalarea,dphi,P);
+            // printf("%ld,phi=%1.7f,dphi=%e,P=%e.\n",count,totalarea,dphi,P);
         }
     }
     double totalarea = 0.0;
@@ -743,7 +945,7 @@ void loadResultFromFile(FILE * xyz, const int &N, double * Dn, double * m, doubl
     for (int j=0; j<N; j++) fscanf(xyz, "%lf", &x[2*j+1]);
 }
 
-void MD_shearModulus_main(const int &N, const double &alpha, const char * loadpath, const char * savepath, const char * saveCPpath, const double &Ptol, const bool &getCPstate)
+void MD_shearModulus_main(const int &N, const double &alpha, const char * loadpath, const char * savepath, const char * saveCPpath, const double &Ptol, const bool &getCPstate, const bool &positive_shear)
 {
     FILE *abc = fopen(loadpath, "r");
     if (abc == NULL)
@@ -763,12 +965,15 @@ void MD_shearModulus_main(const int &N, const double &alpha, const char * loadpa
     double stress[4] = {0};
 
     // simulation parameters
-    double dG = 1e-9;
+    double dG;
     int N_shear_steps = 20;
     int curr_steps = 0;
     double dt = 5e-4;
     double gam = 0.0;
     double ftol = 1e-30;
+
+    if (positive_shear) dG = 1e-9;
+    else dG = -1e-9;
 
     // open file to save sheared state, write gam=0 state
     FILE *xyz = fopen(savepath, "w+");
@@ -835,4 +1040,119 @@ void MD_shearModulus_main(const int &N, const double &alpha, const char * loadpa
     delete[] m;
     delete[] x;
     delete[] Fx;
+}
+
+void MD_mapping_shear_func(const int &N, const double &alpha, const char * loadpath, double * Plist, const double &dG)
+{
+    FILE *abc = fopen(loadpath, "r");
+    if (abc == NULL)
+    {
+        cout << loadpath << " not exists!" << endl;
+        return;
+    }
+    // array
+    double * Dn = new double[N];
+    double * m = new double[N];
+    double * x = new double[2*N];
+    loadResultFromFile(abc, N, Dn, m, x);
+    fclose(abc);
+
+    // measurements
+    double * Fx = new double[2*N];
+    double stress[4] = {0};
+
+    // step 1. shear at const. volume, to get P_list
+    // always load p=0 state -> correspond to lowest pressure
+
+    // simulation parameters
+    // double dG = 1e-9;
+    int N_shear_steps = 20;
+    int curr_steps = 0;
+    double dt = 5e-4;
+    double gam = 0.0;
+    double ftol = 1e-30;
+    int Nstates = 21;
+
+    // get contact network
+    bool * contact_network = new bool[N*N];
+    MD_getCtcNwk(N, Dn, x, contact_network, gam);
+
+    Plist[0] = MD_getP(N, Dn, x, alpha, gam);
+
+    while (curr_steps < N_shear_steps)
+    {
+        // shear at constant volume to gam+dG
+        MD_shrjam_minimization(N, Dn, m, x, dt, alpha, dG, gam, ftol);
+        for (int i=0; i<2*N; i++) Fx[i] = 0.0;
+        double Ftol = MD_getFtol(N,Dn,x,Fx,alpha,gam);
+        MD_getStressTensor(N, Dn, x, stress, alpha, gam);
+        cout << "Ftol=" << Ftol << ",sigma_xy=" << -stress[1] << endl;
+        
+        curr_steps += 1;
+        Plist[curr_steps] = MD_getP_DS(N, Dn, x, contact_network, alpha, gam);
+        // cout << "Step=" << curr_steps << ",gamma=" << gam << ",Pds=" << Plist[curr_steps] << ",P=" << MD_getP(N, Dn, x, alpha, gam) << " completed." << endl;
+        // cout << "Step=" << curr_steps << ",gamma=" << gam << ",P=" << Plist[curr_steps] << " completed." << endl;
+    }
+
+    delete[] Dn;
+    delete[] m;
+    delete[] x;
+    delete[] Fx;
+
+    cout << "Done shearing!" << endl;
+}
+
+void MD_mapping_shearCP_func(const int &N, const double &alpha, const char * loadpath, const char * savepath, const double &Ptol, const double &dG)
+{
+    FILE *abc = fopen(loadpath, "r");
+    if (abc == NULL)
+    {
+        cout << loadpath << " not exists!" << endl;
+        return;
+    }
+    // array
+    double * Dn = new double[N];
+    double * m = new double[N];
+    double * x = new double[2*N];
+    loadResultFromFile(abc, N, Dn, m, x);
+    fclose(abc);
+
+    // Simulation parameters
+    double dt = 5e-4;
+    double gam = 0.0;
+    double ftol = 1e-30;
+
+    // get contact network
+    bool * contact_network = new bool[N*N];
+    MD_getCtcNwk(N, Dn, x, contact_network, gam);
+
+    // step 1: compress to target pressure and write to file, at zero gamma
+    double dphi = 1e-5;
+    MD_cmpjam_main_DS(N, Dn, m, x, contact_network, dt, alpha, Ptol, dphi, gam);
+    FILE *xyz = fopen(savepath, "w+");
+    writeResultToFile(xyz, N, Dn, m, x);
+
+    // step 2: shear and find const. pressure state
+    // double dG = 1e-9;
+    int N_shear_steps = 20;
+    int curr_steps = 0;
+    while (curr_steps < N_shear_steps)
+    {
+        // shear at constant volume to gam+dG
+        MD_shrjam_minimization(N, Dn, m, x, dt, alpha, dG, gam, ftol);
+
+        // get const. P state
+        // MD_cmpjam_main(N, Dn, m, x, dt, alpha, Ptol, dphi, gam);
+        MD_cmpjam_main_DS(N, Dn, m, x, contact_network, dt, alpha, Ptol, dphi, gam);
+
+        // write to file
+        writeResultToFile(xyz, N, Dn, m, x);
+
+        cout << "Step=" << curr_steps << ",gamma=" << gam << ",P=" << MD_getP(N, Dn, x, alpha, gam) << " completed." << endl;
+        curr_steps += 1;
+    }
+
+    fclose(xyz);
+
+    delete[] contact_network;
 }

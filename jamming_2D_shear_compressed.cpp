@@ -12,7 +12,14 @@ using namespace std;
 
 int main(int argc, char ** argv)
 {
-    // should I use MPI?
+    /*
+    to compile on cluster:
+    g++ jamming_2D_shear_compressed.cpp MD_function.hpp MD_function.cpp -static -O3 -o shear.out
+    local machine:
+    clang++ jamming_2D_shear_compressed.cpp MD_function.hpp MD_function.cpp -O3
+    */
+
+    // should I use MPI? NO!!!
     int N;// = 6;
     double alpha;// = 2.0;
     int seed;// = 10;
@@ -20,6 +27,9 @@ int main(int argc, char ** argv)
     N = atoi(argv[1]);
     alpha = atof(argv[2]);
     seed = atoi(argv[3]);
+
+    // step 0. determine shear positive or negative
+    const bool positive_shear = true;
 
     // step 1. get where compressed states are saved
     string space = "_";
@@ -43,6 +53,7 @@ int main(int argc, char ** argv)
     string loadpath;
     string savepath;
     string saveCPpath;
+
     if (OS == 0) // Linux
     {
         tempname = "/gpfs/loomis/project/ohern/pw374/2D_CPP_FIRE_N_";
@@ -50,19 +61,17 @@ int main(int argc, char ** argv)
         tempname.append("_alpha_");
         tempname.append(argv[2]);
         tempname.append("_shearG_scan/");
-        loadpath = tempname;
-        savepath = tempname;
-        loadpath = loadpath.append("compressed_states/"); // ~/compressed_states/
-        savepath = savepath.append("sheared_states/"); // ~/sheared_states/
     }
     else // Mac
     {
         tempname = "/Users/philipwang1/Dropbox/Yale/C++/Jamming/";
-        loadpath = tempname;
-        savepath = tempname;
-        loadpath = loadpath.append("compressed_states/"); // ~/compressed_states/
-        savepath = savepath.append("sheared_states/"); // ~/sheared_states/
     }
+
+    loadpath = tempname;
+    savepath = tempname;
+    loadpath = loadpath.append("compressed_states/"); // ~/compressed_states/
+    if (positive_shear) savepath = savepath.append("sheared_states/"); // ~/sheared_states/
+    else savepath = savepath.append("neg_sheared_states/"); // ~/neg_sheared_states/
 
     int p0 = 0;
     bool restart = false; // currently not needed?
@@ -72,6 +81,16 @@ int main(int argc, char ** argv)
     saveCPpath.append(constPname);
     if (IsPathExist(savepath.c_str()))
     {
+        // check if logged
+        string logged_path = savepath;
+        stringstream ss;
+        ss << "logged";
+        logged_path.append(ss.str());
+        if (IsPathExist(logged_path.c_str()))
+        {
+            cout << savepath << " logged!" << endl;
+            return 0;
+        }
         // find all created states and restart from where left behind
         int Nstates;
         if (alpha > 2.0) Nstates = 1600;
@@ -134,8 +153,8 @@ int main(int argc, char ** argv)
         savelocal.append(ss.str());
         saveCPlocal.append(ss.str());
         bool getCPstate = false;
-        if (p%20 == 0 || p==Nstates-1) getCPstate = true;
-        MD_shearModulus_main(N, alpha, loadlocal.c_str(), savelocal.c_str(), saveCPlocal.c_str(), Ptol, getCPstate);
+        // if (p%20 == 0 || p==Nstates-1) getCPstate = true;
+        MD_shearModulus_main(N, alpha, loadlocal.c_str(), savelocal.c_str(), saveCPlocal.c_str(), Ptol, getCPstate, positive_shear);
     }
     return 0;
 }
