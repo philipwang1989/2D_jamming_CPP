@@ -1,5 +1,4 @@
 # 2D_jamming_CPP
-Pay attention to the energy minimization step.
-Do not change the relative order of each steps!
-For example, FIRE must come before the second step of Velocity Verlet algorithm.
-Otherwise the system will behave strangely and will not converge.
+This code generate 2D jammed packing of bidispersed disks.
+Energy minimization is done with FIRE algorithm.
+Contact model is simple repulsive spring potential.
